@@ -32,6 +32,15 @@ export interface Options {
   timeoutMs?: number;
   /** Aborts the call. */
   signal?: AbortSignal;
+  /**
+   * An API key from https://www.kavel.ai/settings/apikeys. With a key the call
+   * runs on your account — your credits, your plan's models, no watermark on a
+   * paid plan. Without one it runs on the free anonymous tier. Defaults to the
+   * `KAVEL_API_KEY` environment variable when it can be read.
+   */
+  apiKey?: string;
+  /** Model to run. Only honoured with an API key; the free tier has one model per lane. */
+  model?: string;
   /** Override for tests or a proxy. */
   baseUrl?: string;
   /** Override for tests. */
@@ -43,7 +52,8 @@ export type KavelErrorKind =
   | "invalid" // fix the call
   | "quota" // wait, or sign in
   | "rejected" // reword the prompt
-  | "sign_in" // off the free shelf
+  | "sign_in" // off the free shelf, or the plan does not include this model
+  | "auth" // the API key is invalid or deleted
   | "timeout"
   | "service";
 
@@ -79,16 +89,22 @@ export function anonId(): string {
 export function parseSubmit(env: Envelope): string {
   if (env.code !== 0) {
     const m = env.message ?? "request refused";
-    if (m.toLowerCase().includes("sign in")) throw new KavelError("sign_in", m);
+    const lower = m.toLowerCase();
+    if (lower.includes("invalid api key")) throw new KavelError("auth", m);
+    if (lower.includes("insufficient credits")) throw new KavelError("quota", m);
+    if (lower.includes("sign in") || lower.includes("subscription")) throw new KavelError("sign_in", m);
     throw new KavelError("service", m);
   }
   const d = env.data ?? {};
   if (d.wall === true) {
     if (d.reason === "anon_ip_daily") {
-      throw new KavelError("quota", `this machine has used its ${IP_DAILY_CEILING} credits for today`);
+      throw new KavelError(
+        "quota",
+        `this machine has used its ${IP_DAILY_CEILING} free credits for today — pass an apiKey from ${BASE_URL}/settings/apikeys to keep going`,
+      );
     }
     if (d.reason === "anon_unmetered_video") throw new KavelError("sign_in", "video");
-    throw new KavelError("quota", "free allowance spent");
+    throw new KavelError("quota", `free allowance spent — pass an apiKey from ${BASE_URL}/settings/apikeys to keep going`);
   }
   if (typeof d.id !== "string" || d.id === "") {
     throw new KavelError("service", "the service returned no task id");
@@ -102,7 +118,7 @@ export function generate(prompt: string, opts: Options = {}): Promise<Image> {
   return run(opts, {
     provider: "kie",
     mediaType: "image",
-    model: MODEL_GENERATE,
+    model: keyFor(opts) && opts.model ? opts.model : MODEL_GENERATE,
     scene: "text-to-image",
     prompt,
     options: { aspect_ratio: opts.aspectRatio || "1:1" },
@@ -118,7 +134,7 @@ export function edit(sourceUrl: string, instruction: string, opts: Options = {})
   return run(opts, {
     provider: "kie",
     mediaType: "image",
-    model: MODEL_EDIT,
+    model: keyFor(opts) && opts.model ? opts.model : MODEL_EDIT,
     scene: "image-to-image",
     prompt: instruction,
     options: { image_input: [sourceUrl] },
@@ -134,34 +150,60 @@ const wait = (ms: number, signal?: AbortSignal) =>
     }, { once: true });
   });
 
+function keyFor(opts: Options): string | undefined {
+  if (opts.apiKey) return opts.apiKey;
+  try {
+    return (globalThis as { Deno?: { env: { get(k: string): string | undefined } } }).Deno?.env.get("KAVEL_API_KEY") ??
+      (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.KAVEL_API_KEY;
+  } catch {
+    return undefined; // Deno without --allow-env
+  }
+}
+
 async function run(opts: Options, payload: unknown): Promise<Image> {
   const f = opts.fetch ?? fetch;
   const base = opts.baseUrl ?? BASE_URL;
   const deadline = Date.now() + (opts.timeoutMs ?? 360_000);
-  const id = anonId();
+  const key = keyFor(opts);
+  // With a key the account is the identity; without one, a fresh anonymous id.
+  const auth: Record<string, string> = key ? { authorization: `Bearer ${key}` } : { "x-anon-id": anonId() };
 
   const res = await f(`${base}/api/ai/generate`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-anon-id": id },
+    headers: { "content-type": "application/json", ...auth },
     body: JSON.stringify(payload),
     signal: opts.signal,
   });
   const task = parseSubmit(await res.json() as Envelope);
 
-  // Free runs queue 25-80s and only reach the model on the poll that crosses
-  // the end of it, so polling is what starts the work.
-  const query = `${base}/api/ai/anon-query?taskId=${encodeURIComponent(task)}&provider=kie&mediaType=image`;
+  // Queued runs only reach the model on the poll that crosses the end of the
+  // wait, so polling is what starts the work.
+  const poll = (): Promise<Response> =>
+    key
+      ? f(`${base}/api/ai/query`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...auth },
+        body: JSON.stringify({ taskId: task }),
+        signal: opts.signal,
+      })
+      : f(`${base}/api/ai/anon-query?taskId=${encodeURIComponent(task)}&provider=kie&mediaType=image`, {
+        headers: auth,
+        signal: opts.signal,
+      });
+
   while (Date.now() < deadline) {
     await wait(opts.pollEveryMs ?? 5000, opts.signal);
     let env: Envelope;
     try {
-      env = await (await f(query, { headers: { "x-anon-id": id }, signal: opts.signal })).json();
+      env = await (await poll()).json();
     } catch (e) {
       if (opts.signal?.aborted) throw e;
       continue; // a dropped poll is not a failed generation
     }
     if (env.code !== 0) continue;
     const d = env.data ?? {};
+    const clean = d.cleanImages as string[] | undefined;
+    if (clean?.length) return { url: clean[0], watermarked: false };
     const images = d.images as string[] | undefined;
     if (images?.length) {
       return { url: images[0], watermarked: Boolean((d.watermarked as boolean[] | undefined)?.[0]) };

@@ -55,6 +55,20 @@ when the picture has to contain correctly spelled text, and
 [Seedream 5.0 Pro](https://www.kavel.ai/image/seedream-5-pro?utm_source=jsr&utm_medium=package) for
 photoreal people. [Pricing](https://www.kavel.ai/pricing?utm_source=jsr&utm_medium=package) has every tier.
 
+## Past the free tier: an API key
+
+When the free allowance runs out, the error tells you where to go next. Create a key at
+[kavel.ai/settings/apikeys](https://www.kavel.ai/settings/apikeys?utm_source=jsr&utm_medium=package) — the same account
+you use on the site — and pass it (or set `KAVEL_API_KEY`):
+
+```ts
+const img = await generate(prompt, { apiKey: Deno.env.get("KAVEL_API_KEY"), model: "gpt-image-2" });
+```
+
+With a key every call runs on your account, exactly as it would on the site: your
+[credits and plan](https://www.kavel.ai/pricing?utm_source=jsr&utm_medium=package), no per-IP ceiling, no watermark on a
+paid plan, and any image model your plan includes. A `KavelError` with `kind === "auth"` means the key is wrong; `"quota"` with a key means the account is out of credits.
+
 ## Prompts that work
 
 Name the light, the material and the composition — that moves the result more than adjectives do.
