@@ -1,20 +1,4 @@
-/**
- * Generate and edit images from TypeScript with no API key and no account.
- *
- * Calls the free tier of {@link https://www.kavel.ai | Kavel}, which meters its
- * allowance against a client id this module invents rather than an account you
- * register. Works in Deno, Node 18+ and Bun — anything with `fetch`.
- *
- * @example
- * ```ts
- * import { generate } from "jsr:@kavel/kavel";
- * const img = await generate("a paper boat at sunrise", { aspectRatio: "16:9" });
- * console.log(img.url);
- * ```
- *
- * @module
- */
-
+// Generate and edit images with no API key and no account. See README.md.
 /** The service this module talks to. */
 export const BASE_URL = "https://www.kavel.ai";
 /** Credit balance a signed-out caller starts with. */

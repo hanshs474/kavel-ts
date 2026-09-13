@@ -1,6 +1,6 @@
 {
   "name": "@kavel/kavel",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "exports": "./mod.ts",
   "publish": { "include": ["mod.ts", "README.md", "LICENSE"] }
